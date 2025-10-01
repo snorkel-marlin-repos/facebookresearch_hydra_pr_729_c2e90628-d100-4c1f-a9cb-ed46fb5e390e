@@ -20,7 +20,7 @@ from typing import (
     Union,
 )
 
-from omegaconf import DictConfig, OmegaConf, _utils, read_write
+from omegaconf import DictConfig, OmegaConf, read_write
 from omegaconf.errors import OmegaConfBaseException
 
 from hydra._internal.config_search_path_impl import ConfigSearchPathImpl
@@ -427,6 +427,8 @@ def _locate(path: str) -> Union[type, Callable[..., Any]]:
     This is similar to the pydoc function `locate`, except that it checks for
     the module from the given path from back to front.
     """
+    if path == "":
+        raise ImportError("Empty path")
     import builtins
     from importlib import import_module
 
@@ -434,11 +436,11 @@ def _locate(path: str) -> Union[type, Callable[..., Any]]:
     module = None
     for n in reversed(range(len(parts))):
         try:
-            module = import_module(".".join(parts[:n]))
+            mod = ".".join(parts[:n])
+            module = import_module(mod)
         except Exception as e:
             if n == 0:
-                log.error(f"Error loading module {path} : {e}")
-                raise e
+                raise ImportError(f"Error loading module '{path}'") from e
             continue
         if module:
             break
@@ -448,9 +450,7 @@ def _locate(path: str) -> Union[type, Callable[..., Any]]:
         obj = builtins
     for part in parts[n:]:
         if not hasattr(obj, part):
-            raise ValueError(
-                f"Error finding attribute ({part}) in class ({obj.__name__}): {path}"
-            )
+            raise ImportError(f"Could not locate '{path}'")
         obj = getattr(obj, part)
     if isinstance(obj, type):
         obj_type: type = obj
@@ -470,7 +470,11 @@ def _get_kwargs(config: Union[ObjectConf, DictConfig], **kwargs: Any) -> Any:
     else:
         config = copy.deepcopy(config)
 
-    params = config.params if hasattr(config, "params") else {}
+    params = (
+        config.params
+        if hasattr(config, "params") and config.params is not None
+        else OmegaConf.create()
+    )
 
     assert isinstance(
         params, MutableMapping
@@ -480,22 +484,22 @@ def _get_kwargs(config: Union[ObjectConf, DictConfig], **kwargs: Any) -> Any:
         assert isinstance(params, DictConfig)
         params._set_parent(config)
 
-    primitives = {}
-    rest = {}
+    config_overrides = {}
+    passthrough = {}
     for k, v in kwargs.items():
-        if _utils.is_primitive_type(v) or isinstance(v, (dict, list)):
-            primitives[k] = v
+        if k in params:
+            config_overrides[k] = v
         else:
-            rest[k] = v
+            passthrough[k] = v
     final_kwargs = {}
 
     with read_write(params):
-        params.merge_with(primitives)
+        params.merge_with(config_overrides)
 
     for k, v in params.items():
         final_kwargs[k] = v
 
-    for k, v in rest.items():
+    for k, v in passthrough.items():
         final_kwargs[k] = v
     return final_kwargs
 
